@@ -2,7 +2,8 @@
 # Tests for lib/config.sh
 
 # Globals set here are read by the sourced libraries.
-# shellcheck disable=SC2034
+# Each @test runs in its own subshell by design (SC2030/SC2031).
+# shellcheck disable=SC2034,SC2030,SC2031
 
 bats_require_minimum_version 1.5.0
 load test_helper

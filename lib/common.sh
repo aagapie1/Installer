@@ -24,6 +24,12 @@ AAI_COMMON_LOADED=1
 : "${AAI_DRY_RUN:=0}"
 : "${AAI_NON_INTERACTIVE:=0}"
 : "${AAI_LOCK_FILE:=/run/lock/asistent-ai-install.lock}"
+: "${AAI_INSTALL_DIR:=/opt/asistent-ai}"
+
+# Set by a stage that needs the operator to act (e.g. "reboot") before the
+# installation can continue; install.sh stops cleanly when it is set.
+# shellcheck disable=SC2034  # read by install.sh
+AAI_STOP_REASON=''
 
 AAI_LOG_ENABLED=0
 # Summary rows: "STATUS<TAB>stage<TAB>message<TAB>action"
@@ -315,4 +321,69 @@ aai_summary_print() {
   done
   printf '\nOK: %s · AVERTISMENT: %s · EROARE: %s\n' \
     "$(aai_summary_count OK)" "$(aai_summary_count AVERTISMENT)" "$(aai_summary_count EROARE)"
+}
+
+# ---------------------------------------------------------------------------
+# Checks and idempotent file writes
+# ---------------------------------------------------------------------------
+
+# Prints one check result and records it in the summary.
+# Usage: aai_check OK|AVERTISMENT|EROARE <stage> <message> [what to do]
+aai_check() {
+  local status=$1 stage=$2 message=$3 action=${4:-}
+  # P0 only reads the system, so its results are real even in dry-run.
+  if aai_is_dry_run && [[ "$stage" != P0 ]]; then
+    message+=" (simulat)"
+  fi
+  case "$status" in
+    OK) aai_ok "$message" ;;
+    AVERTISMENT) aai_warn "$message" ;;
+    EROARE) aai_error "$message" ;;
+    *) return 2 ;;
+  esac
+  if [[ -n "$action" && "$status" != OK ]]; then
+    printf '%s→ Ce trebuie făcut:%s %s\n' "$C_BOLD" "$C_RESET" "$action" >&2
+  fi
+  aai_summary_add "$status" "$stage" "$message" "$action"
+}
+
+# Writes stdin to <dest> only if the content differs, atomically, with the
+# given mode (owner root when running as root). Sets AAI_FILE_CHANGED=1 when
+# the file was (or, in dry-run, would be) created or changed, else 0.
+# Usage: aai_write_file <dest> [mode] < <(producer)   (not `producer | aai_write_file`:
+# a pipe runs it in a subshell and AAI_FILE_CHANGED would be lost)
+AAI_FILE_CHANGED=0
+aai_write_file() {
+  local dest=$1 mode=${2:-644} tmp dir
+  dir=$(dirname -- "$dest")
+  tmp=$(mktemp)
+  cat >"$tmp"
+  if [[ -f "$dest" ]] && cmp -s -- "$tmp" "$dest"; then
+    rm -f -- "$tmp"
+    AAI_FILE_CHANGED=0
+    aai_debug "Neschimbat: $dest"
+    return 0
+  fi
+  # shellcheck disable=SC2034  # read by the callers
+  AAI_FILE_CHANGED=1
+  if aai_is_dry_run; then
+    rm -f -- "$tmp"
+    printf '%s[dry-run]%s scriu fișierul %s (mod %s)\n' "$C_BLUE" "$C_RESET" "$dest" "$mode"
+    return 0
+  fi
+  # Final temp file in the destination directory so the rename is atomic.
+  local final
+  if ! mkdir -p -- "$dir" || ! final=$(mktemp -p "$dir" ".aai-write.XXXXXX") ||
+    ! cat -- "$tmp" >"$final" || ! chmod "$mode" -- "$final" || ! mv -f -- "$final" "$dest"; then
+    rm -f -- "$tmp" "${final:-}"
+    aai_error "Nu pot scrie fișierul $dest."
+    return 1
+  fi
+  rm -f -- "$tmp"
+  aai_debug "Scris: $dest (mod $mode)"
+}
+
+# True when a command exists on PATH.
+aai_have() {
+  command -v "$1" >/dev/null 2>&1
 }

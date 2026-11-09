@@ -19,8 +19,9 @@ test:
 	@command -v bats >/dev/null || { echo "Lipsește bats: apt install -y bats"; exit 1; }
 	bats tests/unit/
 
+# Example: make vm-test VM_ARGS="--keep --stages P0,P1"
 vm-test:
-	@echo "make vm-test: testul în VM (tests/vm/multipass-test.sh) se adaugă în M2/M9."; exit 1
+	tests/vm/multipass-test.sh $(VM_ARGS)
 
 eval:
 	@echo "make eval: scripts/run-eval.sh se adaugă în M6."; exit 1

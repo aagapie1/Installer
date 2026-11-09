@@ -21,6 +21,12 @@ source "${AAI_ROOT}/lib/common.sh"
 source "${AAI_ROOT}/lib/config.sh"
 # shellcheck source=lib/stages.sh
 source "${AAI_ROOT}/lib/stages.sh"
+# shellcheck source=lib/preflight.sh
+source "${AAI_ROOT}/lib/preflight.sh"
+# shellcheck source=lib/system.sh
+source "${AAI_ROOT}/lib/system.sh"
+# shellcheck source=lib/docker.sh
+source "${AAI_ROOT}/lib/docker.sh"
 
 OPT_CONFIG=''
 OPT_ONLY=''
@@ -46,6 +52,9 @@ Opțiuni:
                          --set admin.allowed_ips=10.0.0.0/8,192.0.2.10)
   -h, --help            afișează acest mesaj
   --version             afișează versiunea kitului
+
+Coduri de ieșire: 0 = OK, 1 = eroare, 2 = utilizare greșită,
+                  3 = e nevoie de repornire (rulați din nou după reboot)
 
 Etape: $(aai_stage_list_help)
 Jurnal: ${AAI_LOG_FILE}
@@ -114,19 +123,11 @@ not_implemented() {
 }
 
 stage_preflight() {
-  plan "Verific OS-ul (Ubuntu 24.04, x86_64), RAM, disc liber, nuclee CPU"
-  plan "Detectez placa NVIDIA și VRAM-ul (profil: $(config_get inference.profile))"
-  plan "Verific porturile 80/443 și că $(config_get domain) rezolvă la IP-ul serverului"
-  plan "Testez descărcarea unui fișier de ~50 MB"
-  not_implemented preflight M2
+  preflight_run
 }
 
 stage_system() {
-  plan "apt update/upgrade; instalez curl git jq openssl zstd ufw unattended-upgrades ethtool"
-  plan "Firewall ufw: permis doar 22, 80, 443"
-  plan "Instalez Docker Engine (repository oficial Docker) și Compose v2"
-  plan "Pe GPU: driver NVIDIA și NVIDIA Container Toolkit"
-  not_implemented system M2
+  system_stage
 }
 
 stage_inference() {
@@ -166,10 +167,29 @@ stage_report() {
   not_implemented report M8
 }
 
+# Runs one stage. Stops the installation (exit 1) when the stage recorded an
+# error, or cleanly (exit 3) when it asked the operator to act first, e.g.
+# reboot after the NVIDIA driver install. In dry-run it only reports this.
 run_stage() {
-  local stage=$1
-  aai_step "$(aai_stage_label "$stage")"
+  local stage=$1 errors_before label
+  label=$(aai_stage_label "$stage")
+  errors_before=$(aai_summary_count EROARE)
+  aai_step "$label"
   "stage_${stage}"
+  if (($(aai_summary_count EROARE) > errors_before)); then
+    if aai_is_dry_run; then
+      aai_warn "În rularea reală, instalarea s-ar opri aici (etapa ${label} are erori)."
+      return 0
+    fi
+    aai_summary_print
+    aai_error "Instalarea s-a oprit la etapa ${label}. Corectați problemele de mai sus și rulați din nou aceeași comandă."
+    exit 1
+  fi
+  if [[ "$AAI_STOP_REASON" == reboot ]]; then
+    aai_summary_print
+    aai_warn "Instalarea s-a oprit pentru repornire. După sudo reboot, rulați din nou aceeași comandă; etapele deja făcute nu se repetă inutil."
+    exit 3
+  fi
 }
 
 # ---------------------------------------------------------------------------
