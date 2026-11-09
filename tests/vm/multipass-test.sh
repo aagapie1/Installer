@@ -6,6 +6,9 @@
 # Usage: tests/vm/multipass-test.sh [--stages P0,P1] [--keep] [--name <vm>]
 #
 # Environment: AAI_VM_CPUS (4), AAI_VM_MEMORY (16G), AAI_VM_DISK (80G).
+# With less than 16G (e.g. AAI_VM_MEMORY=8G on a small host) the P0 RAM
+# threshold is lowered inside the VM so P0/P1 can still be tested; later
+# stages (Dify + model) need more than 12 GB.
 # Exit code 0 = all checks passed.
 
 set -Eeuo pipefail
@@ -19,6 +22,7 @@ VM_MEMORY=${AAI_VM_MEMORY:-16G}
 VM_DISK=${AAI_VM_DISK:-80G}
 KIT_DIR=/home/ubuntu/kit
 FAILURES=0
+INSTALL_ENV=()
 
 say() { printf '\n== %s ==\n' "$*"; }
 ok() { printf '[OK] %s\n' "$*"; }
@@ -54,10 +58,57 @@ cleanup() {
   fi
 }
 
+# Converts a Multipass size (8G, 8192M, 16GiB) to MiB.
+size_to_mib() {
+  local v=${1^^}
+  v=${v%IB}
+  v=${v%B}
+  case "$v" in
+    *G) printf '%s' "$((${v%G} * 1024))" ;;
+    *M) printf '%s' "${v%M}" ;;
+    *K) printf '%s' "$((${v%K} / 1024))" ;;
+    *) printf '%s' "$((v / 1048576))" ;;
+  esac
+}
+
+# Fails early (with advice) when the host cannot give the VM its memory.
+check_host_memory() {
+  local want avail_kb avail
+  want=$(size_to_mib "$VM_MEMORY")
+  [[ -r /proc/meminfo ]] || return 0   # macOS: let Multipass decide
+  avail_kb=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)
+  avail=$((avail_kb / 1024))
+  if ((avail < want + 1024)); then
+    printf '[EROARE] Gazda are doar %s MiB RAM disponibili; VM-ul cere %s MiB.\n' "$avail" "$want" >&2
+    printf '→ Ce trebuie făcut: închideți alte aplicații/VM-uri sau rulați cu mai puțină memorie, ex.:\n' >&2
+    printf '    AAI_VM_MEMORY=%sM %s\n' "$(((avail - 1024) / 512 * 512))" "$0" >&2
+    printf '  (pentru P0/P1 ajung 4–8 GB; etapele următoare cer cel puțin 16 GB)\n' >&2
+    exit 2
+  fi
+}
+
+# Below 16G the P0 RAM check would stop the installer; lower its threshold
+# for this test only (MemTotal is a bit under the nominal size).
+set_install_env() {
+  local mib
+  mib=$(size_to_mib "$VM_MEMORY")
+  if ((mib < 16384)); then
+    INSTALL_ENV=("AAI_RAM_MIN_MIB=$((mib * 3 / 4))")
+    printf '[AVERTISMENT] VM cu %s RAM: pragul de RAM din P0 e coborât la %s MiB doar pentru acest test.\n' \
+      "$VM_MEMORY" "$((mib * 3 / 4))"
+  fi
+}
+
 launch_vm() {
   say "Pornesc VM-ul $VM_NAME (Ubuntu 24.04, ${VM_CPUS} CPU, ${VM_MEMORY} RAM, ${VM_DISK} disc)"
-  multipass launch 24.04 --name "$VM_NAME" --cpus "$VM_CPUS" --memory "$VM_MEMORY" --disk "$VM_DISK"
+  # Set before launch so a VM that fails to start is removed as well.
   trap cleanup EXIT
+  if ! multipass launch 24.04 --name "$VM_NAME" --cpus "$VM_CPUS" --memory "$VM_MEMORY" --disk "$VM_DISK"; then
+    printf '[EROARE] VM-ul nu a pornit (vezi mesajul Multipass de mai sus).\n' >&2
+    printf '→ Ce trebuie făcut: dacă eroarea e „Cannot allocate memory”, rulați cu mai puțină memorie, ex. AAI_VM_MEMORY=8G.\n' >&2
+    KEEP=0
+    exit 2
+  fi
 }
 
 copy_kit() {
@@ -74,7 +125,7 @@ copy_kit() {
 run_install() {
   local label=$1 rc=0
   say "Rulare $label: install.sh --only $STAGES"
-  vm sudo "$KIT_DIR/install.sh" --config "$KIT_DIR/config/client.example.yaml" \
+  vm sudo env "${INSTALL_ENV[@]}" "$KIT_DIR/install.sh" --config "$KIT_DIR/config/client.example.yaml" \
     --only "$STAGES" --non-interactive \
     --set inference.profile=cpu --set tls.mode=none --set domain=asistent.example.test \
     --set admin.allowed_ips=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16 || rc=$?
@@ -122,6 +173,8 @@ main() {
   local before after
   parse_args "$@"
   command -v multipass >/dev/null || { printf 'Lipsește multipass: sudo snap install multipass\n' >&2; exit 2; }
+  check_host_memory
+  set_install_env
   launch_vm
   copy_kit
   run_install "1"
