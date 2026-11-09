@@ -1,0 +1,32 @@
+# Client configuration for asistent-ai-installer.
+# Copy to clients/<short_name>/client.yaml and fill in the values.
+# Relative paths are resolved against the root of the kit repository.
+
+client:
+  name: "Primăria Municipiului Buzău"
+  short_name: "primaria-buzau"          # lowercase, digits and '-'; used in resource names
+  phone_public_relations: "0238 411 015"
+domain: "asistent.primariabuzau.ro"
+admin:
+  email: "admin@smartbytesoft.ro"
+  allowed_ips: ["10.0.0.0/8", "192.0.2.10"]   # access to the Dify console
+tls:
+  mode: "letsencrypt"                    # letsencrypt | custom | none
+  email: "it@primariabuzau.ro"
+  cert_file: ""                          # custom only
+  key_file: ""
+inference:
+  profile: "auto"                        # auto | cpu | gpu
+  chat_model: "auto"                     # auto = chosen by VRAM (config/models.yaml)
+  embedding_model: "bge-m3"
+  rerank_model: "bge-reranker-v2-m3"
+documents_dir: "./clients/primaria-buzau/docs"
+assistant:
+  template: "templates/chatflow-primarie.yml"
+  opener: "Bună ziua! Sunt asistentul virtual al {client.name}. Vă pot ajuta cu informații despre program, contacte și servicii."
+  starter_questions:
+    - "Care este programul cu publicul?"
+    - "Unde pot plăti taxele?"
+    - "Ce acte îmi trebuie pentru certificatul de urbanism?"
+retention_days: 90
+dify_version: "1.19.0"                   # keep the quotes

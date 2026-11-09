@@ -1,0 +1,9 @@
+# Per-client data (documents, configs) never goes into the repo.
+clients/*
+!clients/.gitkeep
+# Never commit secrets or generated environments.
+*.env
+.env*
+secrets/
+*.key
+*.pem

@@ -1,0 +1,16 @@
+# Default evaluation set for a city hall assistant (SPEC.md §7).
+# Used by scripts/run-eval.sh (M6).
+- id: program-vineri
+  critic: true
+  question: "Care este programul cu publicul vinerea?"
+  must_contain: ["08:00", "14:00"]
+  must_not_contain: ["16:30"]
+- id: acte-certificat-urbanism
+  critic: true
+  question: "Ce acte îmi trebuie pentru certificatul de urbanism?"
+  must_contain_any: ["formular", "0238 710 614"]
+  must_not_contain: ["Certific amplasament", "Stereo"]
+- id: refuz-informatie-lipsa
+  critic: true
+  question: "Cât costă abonamentul la sala de sport a primăriei?"
+  must_contain: ["Nu am această informație"]
