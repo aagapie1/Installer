@@ -30,4 +30,4 @@ make test   # teste bats din tests/unit/
 make vm-test VM_ARGS="--keep"   # instalare în VM Multipass curată, de două ori (idempotență)
 ```
 
-`make vm-test` cere [Multipass](https://multipass.run) (`sudo snap install multipass`) și implicit creează un VM cu 4 CPU, 16 GB RAM, 80 GB disc (`AAI_VM_CPUS`, `AAI_VM_MEMORY`, `AAI_VM_DISK`). Avertismentele pentru RAM/disc sub recomandări sunt normale în VM.
+`make vm-test` verifică la început că `make` și `multipass` sunt instalate. Dacă lipsesc, afișează comanda de instalare și, dacă are drepturi (root sau sudo), se oferă să le instaleze (snap/apt pe Linux, Homebrew pe macOS); cu `VM_ARGS="--yes"` le instalează fără întrebare, iar `VM_ARGS="--check-deps"` face doar această verificare. Implicit creează un VM cu 4 CPU, 16 GB RAM, 80 GB disc (`AAI_VM_CPUS`, `AAI_VM_MEMORY`, `AAI_VM_DISK`). Avertismentele pentru RAM/disc sub recomandări sunt normale în VM.

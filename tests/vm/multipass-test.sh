@@ -4,6 +4,13 @@
 # (Multipass), CPU profile, twice: the second run checks idempotency.
 #
 # Usage: tests/vm/multipass-test.sh [--stages P0,P1] [--keep] [--name <vm>]
+#                                   [--yes] [--check-deps]
+#
+# First checks that make and multipass are installed. A missing tool is
+# installed (snap/apt on Linux, Homebrew on macOS) when the script has the
+# rights to do it (root or sudo) and the operator confirms, or --yes is
+# given; otherwise it prints the command to run. --check-deps stops after
+# this check.
 #
 # Environment: AAI_VM_CPUS (4), AAI_VM_MEMORY (16G), AAI_VM_DISK (80G).
 # With less than 16G (e.g. AAI_VM_MEMORY=8G on a small host) the P0 RAM
@@ -23,6 +30,9 @@ VM_DISK=${AAI_VM_DISK:-80G}
 KIT_DIR=/home/ubuntu/kit
 FAILURES=0
 INSTALL_ENV=()
+ASSUME_YES=0
+CHECK_DEPS_ONLY=0
+REQUIRED_TOOLS=(make multipass)
 
 say() { printf '\n== %s ==\n' "$*"; }
 ok() { printf '[OK] %s\n' "$*"; }
@@ -32,7 +42,7 @@ fail() {
 }
 
 usage() {
-  sed -n '3,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '3,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 parse_args() {
@@ -41,11 +51,147 @@ parse_args() {
       --stages) STAGES=$2; shift 2 ;;
       --keep) KEEP=1; shift ;;
       --name) VM_NAME=$2; shift 2 ;;
+      --yes | -y) ASSUME_YES=1; shift ;;
+      --check-deps) CHECK_DEPS_ONLY=1; shift ;;
       -h | --help) usage; exit 0 ;;
       *) printf 'Opțiune necunoscută: %s\n' "$1" >&2; exit 2 ;;
     esac
   done
 }
+
+# ---------------------------------------------------------------------------
+# Host prerequisites: make, multipass
+# ---------------------------------------------------------------------------
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# Snap installs binaries in /snap/bin, which may not be on PATH yet.
+[[ -d /snap/bin && ":$PATH:" != *:/snap/bin:* ]] && PATH="$PATH:/snap/bin"
+
+# Prints the shell commands that install a tool on this host, one per line;
+# nothing if the host has no supported package manager.
+install_commands() {
+  local tool=$1
+  case "$(uname -s)" in
+    Darwin)
+      have brew || return 0
+      case "$tool" in
+        multipass) printf 'brew install --cask multipass\n' ;;
+        make) printf 'xcode-select --install\n' ;;
+      esac
+      ;;
+    Linux)
+      case "$tool" in
+        multipass) have snap && printf 'snap install multipass\n' ;;
+        make)
+          if have apt-get; then
+            printf 'apt-get update\napt-get install -y make\n'
+          elif have dnf; then
+            printf 'dnf install -y make\n'
+          fi
+          ;;
+      esac
+      ;;
+  esac
+  return 0
+}
+
+manual_hint() {
+  case "$1" in
+    multipass) printf 'instrucțiuni: https://canonical.com/multipass/install' ;;
+    make) printf 'instalați pachetul „make” cu managerul de pachete al sistemului' ;;
+  esac
+}
+
+# Sets PRIV to the prefix needed for system-wide installs: empty when root
+# (or on macOS, where Homebrew must not run as root), "sudo" when available.
+# Returns 1 when the script cannot get the rights.
+privilege_prefix() {
+  PRIV=()
+  [[ "$(uname -s)" == Darwin || "$EUID" -eq 0 ]] && return 0
+  have sudo || return 1
+  PRIV=(sudo)
+}
+
+confirm() {
+  local answer
+  ((ASSUME_YES == 1)) && return 0
+  [[ -t 0 ]] || return 1
+  read -r -p "$1 [d/N] " answer || return 1
+  [[ "${answer,,}" == d || "${answer,,}" == da || "${answer,,}" == y || "${answer,,}" == yes ]]
+}
+
+# Waits until the multipass daemon answers (it starts after the snap install).
+wait_for_multipass() {
+  local i
+  for ((i = 0; i < 30; i++)); do
+    multipass version >/dev/null 2>&1 && multipass list >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  return 1
+}
+
+# Prefixes every line of $2 with $1.
+indent() {
+  local prefix=$1 text=$2
+  printf '%s%s' "$prefix" "${text//$'\n'/$'\n'$prefix}"
+}
+
+# Installs one tool. Returns 1 if it is still missing afterwards.
+install_tool() {
+  local tool=$1 cmds line shown
+  cmds=$(install_commands "$tool")
+  if [[ -z "$cmds" ]]; then
+    printf '[EROARE] Lipsește %s și nu îl pot instala automat pe acest sistem (%s).\n' "$tool" "$(manual_hint "$tool")" >&2
+    return 1
+  fi
+  if ! privilege_prefix; then
+    printf '[EROARE] Lipsește %s; pentru instalare e nevoie de root sau sudo. Rulați ca root:\n%s\n' \
+      "$tool" "$(indent '    ' "$cmds")" >&2
+    return 1
+  fi
+  shown=$(indent "    ${PRIV[*]:+${PRIV[*]} }" "$cmds")
+  if ! confirm "Lipsește ${tool}. Îl instalez acum cu:"$'\n'"${shown}"$'\n'"Continuați?"; then
+    printf '[EROARE] Lipsește %s. Instalați-l cu:\n%s\n' "$tool" "$shown" >&2
+    printf '  (sau rulați din nou cu --yes ca să-l instaleze scriptul)\n' >&2
+    return 1
+  fi
+  printf '[INFO] Instalez %s...\n' "$tool"
+  while IFS= read -r line; do
+    # The commands come from install_commands above, never from user input.
+    if ! "${PRIV[@]}" bash -c "$line"; then
+      printf '[EROARE] Comanda a eșuat: %s\n' "$line" >&2
+      return 1
+    fi
+  done <<<"$cmds"
+  if ! have "$tool"; then
+    printf '[EROARE] %s tot nu este disponibil după instalare (deschideți un terminal nou și reîncercați).\n' "$tool" >&2
+    return 1
+  fi
+  if [[ "$tool" == multipass ]] && ! wait_for_multipass; then
+    printf '[EROARE] multipass este instalat, dar serviciul nu răspunde încă (reîncercați în câteva minute).\n' >&2
+    return 1
+  fi
+  printf '[OK] %s instalat\n' "$tool"
+}
+
+check_prerequisites() {
+  local tool missing=0
+  say "Verific programele necesare: ${REQUIRED_TOOLS[*]}"
+  for tool in "${REQUIRED_TOOLS[@]}"; do
+    if have "$tool"; then
+      ok "$tool este instalat"
+    elif ! install_tool "$tool"; then
+      missing=$((missing + 1))
+    fi
+  done
+  if ((missing > 0)); then
+    printf '[EROARE] Testul în VM nu poate porni: lipsesc programe necesare (vezi mai sus).\n' >&2
+    exit 2
+  fi
+}
+
+# ---------------------------------------------------------------------------
 
 vm() { multipass exec "$VM_NAME" -- "$@"; }
 
@@ -172,7 +318,8 @@ check_log() {
 main() {
   local before after
   parse_args "$@"
-  command -v multipass >/dev/null || { printf 'Lipsește multipass: sudo snap install multipass\n' >&2; exit 2; }
+  check_prerequisites
+  ((CHECK_DEPS_ONLY == 1)) && exit 0
   check_host_memory
   set_install_env
   launch_vm
